@@ -1,4 +1,4 @@
-# Slink
+# slinkd
 
 A shared, real-time event stream for ops, alerts, and system signals.
 
