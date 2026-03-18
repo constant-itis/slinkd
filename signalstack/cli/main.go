@@ -42,6 +42,11 @@ func main() {
 			fatal("usage: signal send <channel> --type=<type> --text=<text>")
 		}
 		cmdSend(os.Args[2], os.Args[3:])
+	case "events":
+		if len(os.Args) < 3 {
+			fatal("usage: signal events <channel> [--limit=N]")
+		}
+		cmdEvents(os.Args[2], os.Args[3:])
 	case "channel", "channels":
 		if len(os.Args) < 3 {
 			fatal("usage: signal channel <create|list>")
@@ -63,10 +68,11 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `SignalStack CLI
+	fmt.Fprintf(os.Stderr, `slinkd CLI
 
 Commands:
-  signal tail <channel>                          Stream live events
+  signal tail <channel>                              Stream live events
+  signal events <channel> [--limit=N]                Show recent events
   signal send <channel> --type=<type> --text=<text>  Publish an event
   signal channel create <id> [--name=<name>]      Create a channel
   signal channel list                             List all channels
@@ -153,6 +159,44 @@ func cmdSend(channel string, args []string) {
 	}
 
 	fmt.Println("event sent")
+}
+
+func cmdEvents(channel string, args []string) {
+	limit := "20"
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--limit=") {
+			limit = strings.TrimPrefix(arg, "--limit=")
+		}
+	}
+
+	req, _ := http.NewRequest("GET", host+"/channels/"+url.PathEscape(channel)+"/events?limit="+limit, nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fatal(fmt.Sprintf("request failed: %v", err))
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Events []struct {
+			Type      string `json:"type"`
+			Author    string `json:"author"`
+			Text      string `json:"text"`
+			Timestamp int64  `json:"timestamp"`
+		} `json:"events"`
+	}
+	json.NewDecoder(resp.Body).Decode(&result)
+
+	if len(result.Events) == 0 {
+		fmt.Println("no events")
+		return
+	}
+
+	for _, ev := range result.Events {
+		ts := time.UnixMilli(ev.Timestamp).Format("Jan 02 15:04:05")
+		fmt.Printf("[%s] %s (%s): %s\n", ts, ev.Type, ev.Author, ev.Text)
+	}
 }
 
 func cmdChannelCreate(id string, args []string) {

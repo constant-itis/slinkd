@@ -3,10 +3,10 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -o /signalstack-server ./server/
+RUN CGO_ENABLED=0 go build -o /slinkd-server ./server/
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates
-COPY --from=build /signalstack-server /usr/local/bin/signalstack-server
+COPY --from=build /slinkd-server /usr/local/bin/slinkd-server
 EXPOSE 8080
-ENTRYPOINT ["signalstack-server"]
+ENTRYPOINT ["slinkd-server"]

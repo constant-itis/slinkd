@@ -66,7 +66,7 @@ func main() {
 
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		dbURL = "postgres://localhost:5432/signalstack?sslmode=disable"
+		dbURL = "postgres://localhost:5432/slinkd?sslmode=disable"
 	}
 
 	var err error
@@ -92,7 +92,7 @@ func main() {
 		addr = ":8080"
 	}
 
-	log.Printf("signalstack listening on %s", addr)
+	log.Printf("slinkd listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, mux))
 }
 
