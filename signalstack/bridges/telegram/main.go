@@ -17,13 +17,13 @@ import (
 func main() {
 	token := requireEnv("TELEGRAM_BOT_TOKEN")
 	chatID := requireEnv("TELEGRAM_CHAT_ID")
-	apiKey := requireEnv("SIGNAL_API_KEY")
-	host := os.Getenv("SIGNAL_HOST")
+	apiKey := requireEnv("SLINKD_API_KEY")
+	host := os.Getenv("SLINKD_HOST")
 	if host == "" {
 		host = "http://localhost:8080"
 	}
 	host = strings.TrimRight(host, "/")
-	channel := os.Getenv("SIGNAL_CHANNEL")
+	channel := os.Getenv("SLINKD_CHANNEL")
 	if channel == "" {
 		channel = "alerts"
 	}

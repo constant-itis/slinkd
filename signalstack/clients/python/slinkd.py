@@ -4,7 +4,7 @@ Slinkd Python client.
 Usage:
     from slinkd import Slinkd
 
-    ss = Slinkd()  # reads SIGNAL_API_KEY and SIGNAL_HOST from env
+    ss = Slinkd()  # reads SLINKD_API_KEY and SLINKD_HOST from env
     ss.alert("Orderbook empty: depth=0", author="trading-bot")
     ss.send("deploys", type="deployment", text="v2 shipped", author="ci")
 """
@@ -16,8 +16,8 @@ import requests
 
 class Slinkd:
     def __init__(self, host=None, api_key=None, default_channel="alerts", author=""):
-        self.host = (host or os.environ.get("SIGNAL_HOST", "http://localhost:8080")).rstrip("/")
-        self.api_key = api_key or os.environ.get("SIGNAL_API_KEY", "")
+        self.host = (host or os.environ.get("SLINKD_HOST", "http://localhost:8080")).rstrip("/")
+        self.api_key = api_key or os.environ.get("SLINKD_API_KEY", "")
         self.default_channel = default_channel
         self.author = author
         self._last_alert = {}  # key -> timestamp, for rate limiting

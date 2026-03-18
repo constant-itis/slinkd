@@ -20,8 +20,8 @@ var (
 )
 
 func main() {
-	apiKey = os.Getenv("SIGNAL_API_KEY")
-	host = os.Getenv("SIGNAL_HOST")
+	apiKey = os.Getenv("SLINKD_API_KEY")
+	host = os.Getenv("SLINKD_HOST")
 	if host == "" {
 		host = "http://localhost:8080"
 	}
@@ -34,33 +34,33 @@ func main() {
 	switch os.Args[1] {
 	case "tail":
 		if len(os.Args) < 3 {
-			fatal("usage: signal tail <channel>")
+			fatal("usage: slinkd tail <channel>")
 		}
 		cmdTail(os.Args[2])
 	case "send":
 		if len(os.Args) < 3 {
-			fatal("usage: signal send <channel> --type=<type> --text=<text>")
+			fatal("usage: slinkd send <channel> --type=<type> --text=<text>")
 		}
 		cmdSend(os.Args[2], os.Args[3:])
 	case "events":
 		if len(os.Args) < 3 {
-			fatal("usage: signal events <channel> [--limit=N]")
+			fatal("usage: slinkd events <channel> [--limit=N]")
 		}
 		cmdEvents(os.Args[2], os.Args[3:])
 	case "channel", "channels":
 		if len(os.Args) < 3 {
-			fatal("usage: signal channel <create|list>")
+			fatal("usage: slinkd channel <create|list>")
 		}
 		switch os.Args[2] {
 		case "list":
 			cmdChannelsList()
 		case "create":
 			if len(os.Args) < 4 {
-				fatal("usage: signal channel create <id> [--name=<name>]")
+				fatal("usage: slinkd channel create <id> [--name=<name>]")
 			}
 			cmdChannelCreate(os.Args[3], os.Args[4:])
 		default:
-			fatal("usage: signal channel <create|list>")
+			fatal("usage: slinkd channel <create|list>")
 		}
 	default:
 		usage()
@@ -71,15 +71,15 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `slinkd CLI
 
 Commands:
-  signal tail <channel>                              Stream live events
-  signal events <channel> [--limit=N]                Show recent events
-  signal send <channel> --type=<type> --text=<text>  Publish an event
-  signal channel create <id> [--name=<name>]      Create a channel
-  signal channel list                             List all channels
+  slinkd tail <channel>                              Stream live events
+  slinkd events <channel> [--limit=N]                Show recent events
+  slinkd send <channel> --type=<type> --text=<text>  Publish an event
+  slinkd channel create <id> [--name=<name>]      Create a channel
+  slinkd channel list                             List all channels
 
 Environment:
-  SIGNAL_API_KEY   API key for authentication
-  SIGNAL_HOST      Server URL (default: http://localhost:8080)
+  SLINKD_API_KEY   API key for authentication
+  SLINKD_HOST      Server URL (default: http://localhost:8080)
 `)
 	os.Exit(1)
 }

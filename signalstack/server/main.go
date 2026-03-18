@@ -59,9 +59,9 @@ func (h *Hub) broadcast(channel string, data []byte) {
 }
 
 func main() {
-	apiKey = os.Getenv("SIGNAL_API_KEY")
+	apiKey = os.Getenv("SLINKD_API_KEY")
 	if apiKey == "" {
-		log.Fatal("SIGNAL_API_KEY is required")
+		log.Fatal("SLINKD_API_KEY is required")
 	}
 
 	dbURL := os.Getenv("DATABASE_URL")
@@ -87,7 +87,7 @@ func main() {
 	mux.HandleFunc("/channels/", authMiddleware(handleChannelRoutes))
 	mux.HandleFunc("/ws", authMiddleware(handleWS))
 
-	addr := os.Getenv("SIGNAL_ADDR")
+	addr := os.Getenv("SLINKD_ADDR")
 	if addr == "" {
 		addr = ":8080"
 	}
