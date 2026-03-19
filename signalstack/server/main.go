@@ -12,9 +12,10 @@ import (
 )
 
 var (
-	db        *pgxpool.Pool
-	apiKey    string
-	hub       *Hub
+	db      *pgxpool.Pool
+	apiKey  string
+	readKey string
+	hub     *Hub
 )
 
 // Hub manages WebSocket subscribers per channel.
@@ -63,6 +64,7 @@ func main() {
 	if apiKey == "" {
 		log.Fatal("SLINKD_API_KEY is required")
 	}
+	readKey = os.Getenv("SLINKD_READ_KEY")
 
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
@@ -100,11 +102,18 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		key := r.Header.Get("Authorization")
 		key = strings.TrimPrefix(key, "Bearer ")
-		if key != apiKey {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+
+		if key == apiKey {
+			next(w, r)
 			return
 		}
-		next(w, r)
+
+		if readKey != "" && key == readKey && r.Method == http.MethodGet {
+			next(w, r)
+			return
+		}
+
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	}
 }
 

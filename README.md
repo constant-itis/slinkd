@@ -112,7 +112,8 @@ All configuration is through environment variables.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `SLINKD_API_KEY` | Yes | — | Shared secret for API authentication |
+| `SLINKD_API_KEY` | Yes | — | Read-write key for full API access |
+| `SLINKD_READ_KEY` | No | — | Read-only key (can GET events/channels, cannot POST) |
 | `DATABASE_URL` | No | `postgres://localhost:5432/slinkd?sslmode=disable` | Postgres connection string |
 | `SLINKD_ADDR` | No | `:8080` | Listen address |
 
@@ -161,7 +162,16 @@ slinkd tail prod-alerts
 
 ## API
 
-All endpoints require `Authorization: Bearer <SLINKD_API_KEY>` header.
+All endpoints require `Authorization: Bearer <key>` header.
+
+Two key types are supported:
+
+| Key | Can GET | Can POST |
+|---|---|---|
+| `SLINKD_API_KEY` | Yes | Yes |
+| `SLINKD_READ_KEY` | Yes | No |
+
+Use the read-only key to give someone visibility into your event stream without letting them write to it.
 
 ### Channels
 
@@ -230,15 +240,19 @@ The bridge watches for `type=alert` events and forwards them to Telegram. It aut
 
 Give someone access to your slinkd instance:
 
-1. Share the server URL and API key
-2. They set the env vars:
-   ```bash
-   export SLINKD_HOST=http://your-server:8080
-   export SLINKD_API_KEY=your-secret-key
-   ```
-3. They can now use the CLI to send, tail, and list channels
+**Full access (read + write):**
+```bash
+export SLINKD_HOST=http://your-server:8080
+export SLINKD_API_KEY=your-secret-key
+```
 
-Currently uses a single shared API key. All users with the key have full access to all channels.
+**Read-only access (can view and tail, cannot post):**
+```bash
+export SLINKD_HOST=http://your-server:8080
+export SLINKD_API_KEY=your-read-only-key
+```
+
+Generate a read key however you want (`openssl rand -hex 16 | sed 's/^/sk-read-/'`), set it as `SLINKD_READ_KEY` on the server, and share it. The read key can list channels, get events, and stream via WebSocket, but any POST request returns 401.
 
 ## Project Structure
 
