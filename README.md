@@ -199,7 +199,27 @@ GET  /ws?channel=:id         Stream events in real time
      Header: Authorization: Bearer <key>
 ```
 
-## Python Client
+## Clients
+
+### Node.js
+
+Copy `clients/nodejs/slinkd.js` into your project. Zero dependencies — uses built-in `fetch` (Node 18+).
+
+```js
+const { Slinkd } = require('./slinkd');
+const ss = new Slinkd({ defaultChannel: 'my-project', author: 'my-bot' });
+
+// Send an alert (rate-limited: same text suppressed for 60s)
+await ss.alert('Orderbook empty: depth=0');
+
+// Send with custom cooldown
+await ss.alert('Spread too high', { cooldown: 300 });
+
+// Send any event type
+await ss.send('deploys', { type: 'deployment', text: 'v3 live', author: 'ci' });
+```
+
+### Python
 
 Copy `clients/python/slinkd.py` into your project. Requires `requests`.
 
@@ -217,6 +237,10 @@ ss.alert("Spread too high", cooldown=300)
 # Send any event type
 ss.send("deploys", type="deployment", text="v3 live", author="ci")
 ```
+
+## Integrating into an existing project
+
+See [INTEGRATING.md](./INTEGRATING.md) for a step-by-step walkthrough (with the gambino-backend integration as a worked example).
 
 ## Telegram Alerts
 
@@ -268,8 +292,10 @@ slinkd/
     telegram/
       main.go        WebSocket→Telegram alert forwarder
   clients/
+    nodejs/
+      slinkd.js  Node.js client, zero dependencies (Node 18+)
     python/
-      slinkd.py Python client with rate-limited alerts
+      slinkd.py  Python client with rate-limited alerts
   Dockerfile         Multi-stage build, ~15MB image
 ```
 
