@@ -184,6 +184,156 @@ Transfer failures now appear in Telegram within seconds. The cooldown prevents f
 
 ---
 
+## Real example: n8n workflow alerts
+
+### Problem
+
+n8n workflows (Substack article generators) run on a webhook trigger — someone hits a URL, an article gets generated via OpenAI, saved to PocketBase, and uploaded to Google Drive. There's no visibility into when these run, what they cost, or if they fail. You only find out something broke when you check Google Drive and nothing's there.
+
+### What we did
+
+n8n doesn't have a native slinkd client, but it doesn't need one. slinkd is just HTTP — n8n's built-in HTTP Request node handles it directly.
+
+**Created the channel:**
+
+```bash
+curl -X POST http://<SLINKD_HOST>/channels \
+  -H "Authorization: Bearer $SLINKD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"id":"content-gen","name":"Content Generation"}'
+```
+
+**Added an HTTP Request node** to each workflow. The node sits at the same fork point as the PocketBase save and Google Drive upload — all three fire in parallel after the article is generated and parsed.
+
+Node configuration:
+
+| Setting | Value |
+|---------|-------|
+| Method | POST |
+| URL | `http://<SLINKD_HOST>/channels/content-gen/events` |
+| Authentication | Header Auth |
+| Header | `Authorization: Bearer <SLINKD_API_KEY>` |
+| Body (JSON) | See below |
+| Continue On Fail | **true** (critical — don't break article gen if slinkd is down) |
+| Timeout | 5000ms |
+
+**Body parameters:**
+
+```json
+{
+  "type": "alert",
+  "author": "VDV Substack",
+  "text": "VDV Substack article generated: \"{{ $json.payload?.topic || $json.topic || 'unknown topic' }}\" | model: gpt-4o | cost: ~$0.01"
+}
+```
+
+The `text` field uses n8n expressions (`={{ }}`) to pull the article topic from the upstream node's output. Adjust the expression path based on your workflow's data shape.
+
+**Where to place it in the workflow:**
+
+```
+... → Parse/QC → Prepare Payload ──┬── Save to PocketBase
+                                   ├── Convert → Upload to Google Drive → Response
+                                   └── Alert: slinkd  ← (new)
+```
+
+The alert node connects from the same fork node that feeds your save and upload paths. In n8n's connection model, this means adding it as another output from `Prepare Payload`'s `main[0]` connections array.
+
+**Set `continueOnFail: true`** on the alert node. This is non-negotiable. If slinkd is down, your article generation must still complete. The alert is a nice-to-have, not a gate.
+
+### Adding it by hand in the n8n editor
+
+If you prefer to add the node manually instead of editing JSON:
+
+1. Open your workflow in n8n
+2. Add a new **HTTP Request** node
+3. Set Method: POST, URL: `http://<SLINKD_HOST>/channels/<your-channel>/events`
+4. Under Authentication, choose "Predefined Credential Type" → "Header Auth" → create a credential with Name: `Authorization`, Value: `Bearer <your-key>`
+5. Send Body → JSON → add your `type`, `author`, and `text` fields
+6. Go to **Settings** tab → toggle on **Continue On Fail**
+7. Draw a connection from your fork/split node to this new node
+8. Test the workflow — you should get a Telegram message
+
+### Adding it via JSON (programmatic)
+
+If you're scripting workflow modifications (e.g., adding alerts to multiple workflows):
+
+```python
+alert_node = {
+    "parameters": {
+        "method": "POST",
+        "url": f"{SLINKD_HOST}/channels/{channel}/events",
+        "sendHeaders": True,
+        "headerParameters": {
+            "parameters": [{
+                "name": "Authorization",
+                "value": f"Bearer {SLINKD_API_KEY}"
+            }]
+        },
+        "sendBody": True,
+        "bodyParameters": {
+            "parameters": [
+                {"name": "type", "value": "alert"},
+                {"name": "author", "value": "my-workflow"},
+                {"name": "text", "value": "={{ 'Article generated: ' + $json.topic }}"}
+            ]
+        },
+        "options": {"timeout": 5000}
+    },
+    "type": "n8n-nodes-base.httpRequest",
+    "typeVersion": 4.2,
+    "name": "Alert: slinkd",
+    "continueOnFail": True
+}
+
+# Add to workflow nodes
+workflow['nodes'].append(alert_node)
+
+# Connect from your fork node
+workflow['connections']['Prepare Payload']['main'][0].append({
+    "node": "Alert: slinkd", "type": "main", "index": 0
+})
+
+# Import via CLI
+# n8n import:workflow --input=updated-workflow.json
+```
+
+### Telegram bridge setup
+
+Each slinkd channel needs its own Telegram bridge instance if you want alerts forwarded. The bridge binary only watches one channel at a time.
+
+```bash
+# Create a systemd service for the new channel
+cat > /etc/systemd/system/slinkd-telegram-content.service << 'EOF'
+[Unit]
+Description=slinkd Telegram bridge (content-gen)
+After=slinkd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/slinkd-telegram
+Environment=SLINKD_API_KEY=<your-key>
+Environment=SLINKD_HOST=http://localhost:8080
+Environment=SLINKD_CHANNEL=content-gen
+Environment=TELEGRAM_BOT_TOKEN=<your-bot-token>
+Environment=TELEGRAM_CHAT_ID=<your-chat-id>
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now slinkd-telegram-content
+```
+
+### Result
+
+Every article generation triggers a Telegram alert with the topic, model, and estimated cost. If slinkd or Telegram is down, article generation is unaffected. If OpenAI is down, you get the n8n error in n8n's execution log (slinkd only fires after successful generation since it's downstream of the AI node).
+
+---
+
 ## Tips
 
 - **Don't alert on success.** If everything is working, slinkd should be quiet. Alert on failures, signal on edge cases.
