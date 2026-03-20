@@ -2,7 +2,7 @@
 
 A shared, real-time event stream for ops, alerts, and system signals.
 
-Systems and people publish structured events. Anyone can watch them live via CLI, WebSocket, or API. Add a Telegram bridge and it becomes your personal alerting system.
+Any system that can make an HTTP POST can publish events to slinkd. slinkd stores them, streams them to anyone watching live via WebSocket or CLI, and makes them available over a simple REST API. What you do with the stream is up to you — pipe it into Telegram, Slack, a dashboard, a pager, a log aggregator, or anything else you can wire up. The repo includes a Telegram bridge as a reference implementation.
 
 ## Quickstart
 

@@ -12,11 +12,11 @@ Real example: a Solana token transfer service was silently failing for days beca
 
 ## What slinkd Does
 
-It's a central place that everything can yell into, and it yells back at you on Telegram.
+It's a central place that everything can yell into, and anything can listen.
 
 That's it.
 
-Any system that can make an HTTP POST can report to slinkd. slinkd stores the event, streams it to anyone watching live, and forwards alerts to your phone. One curl in a catch block and you go from "I had no idea" to "I knew within seconds."
+Any system that can make an HTTP POST can report to slinkd. slinkd stores the event and streams it to anything that's watching — a CLI tail, a WebSocket consumer, a Telegram bot, a Slack webhook, a custom dashboard, whatever you wire up. The repo includes a Telegram bridge because that's what we use, but slinkd doesn't care what's on the other end. One curl in a catch block and you go from "I had no idea" to "I knew within seconds."
 
 ```bash
 curl -X POST http://slinkd:8080/channels/my-app/events \
@@ -87,6 +87,6 @@ When you have one script, you watch the terminal. When you have 5 agents running
 
 ## The Bottom Line
 
-slinkd is the ops equivalent of `print("something broke")` — but instead of printing to a console nobody's watching, it prints to a centralized stream that pushes to your phone. Two database tables, one HTTP server, one WebSocket hub, a Telegram bridge. No Kafka, no Kubernetes, no vendor lock-in.
+slinkd is the ops equivalent of `print("something broke")` — but instead of printing to a console nobody's watching, it prints to a centralized stream that anything can consume. Two database tables, one HTTP server, one WebSocket hub. No Kafka, no Kubernetes, no vendor lock-in. Plug in whatever notification layer you want.
 
 The dumbness is the feature. If your system can POST JSON, it can report to slinkd.
