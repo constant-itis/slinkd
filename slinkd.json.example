@@ -1,15 +1,15 @@
 {
-  "instance_name": "gambino-server",
+  "instance_name": "slinkd-117",
   "watchers": [
     {
       "channel": "pi-fleet",
-      "author": "",
-      "expect_every": "120s",
+      "author": "Nimbus-Nashville",
+      "expect_every": "1h",
       "alert_channel": "gambino",
       "alert_author": "slinkd-watchdog",
-      "message": "pi-fleet went silent (no events in 2m)",
-      "recovery_message": "pi-fleet is back online",
-      "remind_every": "30m"
+      "message": "Nimbus (pi-002) went silent — no heartbeat in 1h",
+      "recovery_message": "Nimbus (pi-002) is back online",
+      "remind_every": "6h"
     }
   ],
   "peers": [
