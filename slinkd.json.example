@@ -1,0 +1,24 @@
+{
+  "instance_name": "gambino-server",
+  "watchers": [
+    {
+      "channel": "pi-fleet",
+      "author": "",
+      "expect_every": "120s",
+      "alert_channel": "gambino",
+      "alert_author": "slinkd-watchdog",
+      "message": "pi-fleet went silent (no events in 2m)",
+      "recovery_message": "pi-fleet is back online",
+      "remind_every": "30m"
+    }
+  ],
+  "peers": [
+    {
+      "name": "claude-remote",
+      "url": "http://100.84.101.90:8080",
+      "heartbeat_every": "30s",
+      "expect_every": "90s",
+      "alert_channel": "gambino"
+    }
+  ]
+}

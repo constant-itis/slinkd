@@ -84,10 +84,24 @@ func main() {
 
 	hub = newHub()
 
+	// Load watchdog config (optional — no config = no watchers)
+	cfg := loadConfig()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/channels", authMiddleware(handleChannels))
 	mux.HandleFunc("/channels/", authMiddleware(handleChannelRoutes))
 	mux.HandleFunc("/ws", authMiddleware(handleWS))
+
+	// /healthz is unauthenticated so peers can ping it
+	instanceName := "slinkd"
+	if cfg != nil && cfg.InstanceName != "" {
+		instanceName = cfg.InstanceName
+	}
+	mux.HandleFunc("/healthz", handleHealthz(instanceName))
+
+	if cfg != nil {
+		startWatchers(cfg, db, hub)
+	}
 
 	addr := os.Getenv("SLINKD_ADDR")
 	if addr == "" {

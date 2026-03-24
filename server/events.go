@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -29,6 +31,36 @@ type Event struct {
 	Text      string          `json:"text"`
 }
 
+// publishEvent inserts an event into the DB, broadcasts it via WebSocket, and notifies watchers.
+func publishEvent(ctx context.Context, channel, eventType, author, text string, data json.RawMessage) (Event, error) {
+	ev := Event{
+		ID:        uuid.New().String(),
+		Channel:   channel,
+		Type:      eventType,
+		Timestamp: time.Now().UnixMilli(),
+		Author:    author,
+		Data:      data,
+		Text:      text,
+	}
+
+	_, err := db.Exec(ctx,
+		`INSERT INTO events (id, channel, type, timestamp, author, data, text)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		ev.ID, ev.Channel, ev.Type, ev.Timestamp, ev.Author, ev.Data, ev.Text,
+	)
+	if err != nil {
+		return Event{}, fmt.Errorf("insert event: %w", err)
+	}
+
+	msg, _ := json.Marshal(ev)
+	hub.broadcast(channel, msg)
+
+	// notify watchers (no-op if watchers not configured)
+	notifyWatchers(channel, author, ev.Timestamp)
+
+	return ev, nil
+}
+
 func handlePublishEvent(w http.ResponseWriter, r *http.Request, channelID string) {
 	var req struct {
 		Type   string          `json:"type"`
@@ -46,30 +78,13 @@ func handlePublishEvent(w http.ResponseWriter, r *http.Request, channelID string
 		return
 	}
 
-	ev := Event{
-		ID:        uuid.New().String(),
-		Channel:   channelID,
-		Type:      req.Type,
-		Timestamp: time.Now().UnixMilli(),
-		Author:    req.Author,
-		Data:      req.Data,
-		Text:      req.Text,
-	}
-
-	_, err := db.Exec(r.Context(),
-		`INSERT INTO events (id, channel, type, timestamp, author, data, text)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		ev.ID, ev.Channel, ev.Type, ev.Timestamp, ev.Author, ev.Data, ev.Text,
-	)
+	ev, err := publishEvent(r.Context(), channelID, req.Type, req.Author, req.Text, req.Data)
 	if err != nil {
 		http.Error(w, "failed to publish event: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// broadcast to WebSocket subscribers
 	msg, _ := json.Marshal(ev)
-	hub.broadcast(channelID, msg)
-
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	w.Write(msg)
