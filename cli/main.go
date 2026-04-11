@@ -62,6 +62,10 @@ func main() {
 		default:
 			fatal("usage: slinkd channel <create|list>")
 		}
+	case "board":
+		cmdBoard(os.Args[2:])
+	case "tasks":
+		cmdTasks(os.Args[2:])
 	default:
 		usage()
 	}
@@ -71,11 +75,13 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `slinkd CLI
 
 Commands:
+  slinkd board [--project=X]                         Kanban board view
+  slinkd tasks [--project=X] [--status=X] [--assignee=X]  List tasks
   slinkd tail <channel>                              Stream live events
   slinkd events <channel> [--limit=N]                Show recent events
   slinkd send <channel> --type=<type> --text=<text>  Publish an event
-  slinkd channel create <id> [--name=<name>]      Create a channel
-  slinkd channel list                             List all channels
+  slinkd channel create <id> [--name=<name>]         Create a channel
+  slinkd channel list                                List all channels
 
 Environment:
   SLINKD_API_KEY   API key for authentication
