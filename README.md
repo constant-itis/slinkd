@@ -1,8 +1,20 @@
 # slinkd
 
-A shared, real-time event stream for ops, alerts, and system signals.
+A real-time event stream and task orchestration system for multi-agent ops.
 
-Any system that can make an HTTP POST can publish events to slinkd. slinkd stores them, streams them to anyone watching live via WebSocket or CLI, and makes them available over a simple REST API. What you do with the stream is up to you — pipe it into Telegram, Slack, a dashboard, a pager, a log aggregator, or anything else you can wire up. The repo includes a Telegram bridge as a reference implementation.
+Any system that can make an HTTP POST can publish events, create tasks, and coordinate work through slinkd. It stores everything in PostgreSQL, streams it live via WebSocket, and makes it available over a simple REST API. Wire it to Telegram, a dashboard, an MCP server, or anything else.
+
+## What It Does
+
+**Events** — A shared nervous system. Services, agents, and cron jobs publish events. Anything can watch the stream live or query history. Your phone buzzes when something breaks.
+
+**Tasks** — A kanban system with atomic state management. Create tasks, assign them to agents, track them through `backlog → todo → claimed → in_progress → done`. Atomic claiming prevents double-work. State transitions emit events so existing consumers see everything.
+
+**Projects** — Group tasks and agents by project. Each project links to a channel where its task events appear.
+
+**Agents** — Register agents (Claude instances, bots, services) with heartbeat tracking. Assign them to projects and tasks.
+
+**Watchdog** — Dead man's switch for anything that should be posting regularly. If a source goes silent, slinkd fires an alert. Peer health checks ping other slinkd instances.
 
 ## Quickstart
 
@@ -15,17 +27,15 @@ Any system that can make an HTTP POST can publish events to slinkd. slinkd store
 
 ```bash
 go build -o bin/slinkd-server ./server/
-go build -o bin/slinkd./cli/
+go build -o bin/slinkd ./cli/
 go build -o bin/slinkd-telegram ./bridges/telegram/
 ```
 
 ### Run
 
 ```bash
-# Create the database
 createdb slinkd
 
-# Start the server
 export SLINKD_API_KEY=your-secret-key
 export DATABASE_URL=postgres://localhost:5432/slinkd?sslmode=disable
 ./bin/slinkd-server
@@ -37,185 +47,241 @@ Tables are created automatically on startup.
 
 ```bash
 docker build -t slinkd .
-
 docker run -p 8080:8080 \
   -e SLINKD_API_KEY=your-secret-key \
   -e DATABASE_URL=postgres://host.docker.internal:5432/slinkd?sslmode=disable \
   slinkd
 ```
 
-### Verify it works
+## API
 
-Once the server is running, paste this into a terminal to test the full loop:
+All endpoints require `Authorization: Bearer <key>` header.
+
+| Key | Can GET | Can POST/PATCH |
+|---|---|---|
+| `SLINKD_API_KEY` | Yes | Yes |
+| `SLINKD_READ_KEY` | Yes | No |
+
+### Channels & Events
+
+```
+POST /channels                        Create a channel
+GET  /channels                        List all channels
+POST /channels/:id/events             Publish an event
+GET  /channels/:id/events?limit=50    Get events (cursor pagination)
+GET  /ws?channel=:id                  Stream events via WebSocket
+GET  /healthz                         Health check (no auth)
+```
+
+Event types: `message`, `alert`, `deployment`, `signal`, `breaking_change`, `task`, `task_result`, `task_update`
+
+### Projects
+
+```
+POST /projects                        Create a project
+GET  /projects                        List all projects
+GET  /projects/:id                    Get a project
+GET  /projects/:id/agents             List project members
+POST /projects/:id/agents             Add agent to project
+```
+
+Creating a project auto-creates its channel if it doesn't exist.
 
 ```bash
-export SLINKD_API_KEY=your-secret-key
-export SLINKD_HOST=http://localhost:8080
-
-# Create a channel, send an event, read it back
-curl -s -X POST $SLINKD_HOST/channels \
-  -H "Authorization: Bearer $SLINKD_API_KEY" \
+curl -X POST /projects -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
-  -d '{"id":"test","name":"Test Channel"}' && echo
-
-curl -s -X POST $SLINKD_HOST/channels/test/events \
-  -H "Authorization: Bearer $SLINKD_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"type":"message","text":"hello from slinkd","author":"me"}' && echo
-
-curl -s $SLINKD_HOST/channels/test/events \
-  -H "Authorization: Bearer $SLINKD_API_KEY"
+  -d '{"id":"gambino","name":"Gambino Backend","channel":"gambino"}'
 ```
 
-You should see your event come back in the response. If you built the CLI:
+### Agents
+
+```
+POST /agents                          Register/upsert agent (idempotent)
+GET  /agents                          List all agents
+GET  /agents/:id                      Get agent details
+PATCH /agents/:id                     Update status + heartbeat
+```
+
+Agent registration is idempotent — call it on startup, it acts as both registration and heartbeat.
 
 ```bash
-slinkd channel list
-slinkd events test
-slinkd tail test  # in one terminal
-slinkd send test --type=message --text="it works" --author=me  # in another
+curl -X POST /agents -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"id":"claude-remote","name":"Claude Remote","metadata":{"host":"lxc-114"}}'
 ```
 
-Or test from any language — it's just HTTP:
+### Tasks
 
-```python
-import requests
-
-url = "http://localhost:8080"
-headers = {"Authorization": "Bearer your-secret-key"}
-
-# send an event
-requests.post(f"{url}/channels/test/events", headers=headers, json={
-    "type": "alert",
-    "text": "disk usage at 92%",
-    "author": "monitor"
-})
-
-# read events
-resp = requests.get(f"{url}/channels/test/events", headers=headers)
-print(resp.json())
 ```
+POST /projects/:id/tasks              Create task in project
+GET  /projects/:id/tasks              List project tasks (filtered)
+GET  /tasks?project=X&status=Y        List tasks across projects
+GET  /tasks/:id                       Get task + subtasks
+PATCH /tasks/:id                      Update task fields
+POST /tasks/:id/transition            State transition (claim, start, complete...)
+```
+
+#### Creating a task
 
 ```bash
-# or just curl from a cron job, CI pipeline, bash script, anything
-curl -X POST http://localhost:8080/channels/deploys/events \
-  -H "Authorization: Bearer your-secret-key" \
+curl -X POST /projects/gambino/tasks -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
-  -d '{"type":"deployment","text":"v2.1 deployed","author":"github-actions"}'
+  -d '{"title":"Fix payment webhook","priority":2,"created_by":"claude-remote","status":"todo"}'
 ```
+
+#### Filtering tasks
+
+```bash
+# All open tasks in a project
+curl "/projects/gambino/tasks?status=todo,claimed,in_progress"
+
+# Tasks assigned to a specific agent
+curl "/projects/gambino/tasks?assignee=claude-remote"
+
+# Cross-project: all blocked tasks
+curl "/tasks?status=blocked"
+```
+
+#### Task state machine
+
+```
+backlog → todo → claimed → in_progress → done
+                    ↓            ↓
+                   todo       blocked → in_progress
+                (unclaim)
+
+Any active state → cancelled → backlog (reopen)
+```
+
+Valid transitions:
+
+| From | To |
+|---|---|
+| `backlog` | `todo`, `cancelled` |
+| `todo` | `claimed`, `cancelled` |
+| `claimed` | `in_progress`, `todo` (unclaim), `cancelled` |
+| `in_progress` | `blocked`, `done`, `cancelled` |
+| `blocked` | `in_progress`, `cancelled` |
+| `cancelled` | `backlog` (reopen) |
+| `done` | (terminal) |
+
+#### Atomic claiming
+
+```bash
+# First agent to claim wins. Second gets 409 Conflict.
+curl -X POST /tasks/$TASK_ID/transition -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"status":"claimed","agent_id":"claude-remote"}'
+```
+
+Uses `UPDATE ... WHERE status = 'todo'` — PostgreSQL row-level locking handles the race. No lockfiles, no distributed locks.
+
+#### Completing a task
+
+```bash
+curl -X POST /tasks/$TASK_ID/transition -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"status":"done","agent_id":"claude-remote","result":"Deployed and verified"}'
+```
+
+#### Event bridge
+
+Every task mutation (create, update, transition) emits a `task_update` event to the project's channel with structured data:
+
+```json
+{
+  "type": "task_update",
+  "text": "Task todo->claimed: Fix payment webhook [claude-remote]",
+  "author": "claude-remote",
+  "data": {
+    "task_id": "uuid",
+    "action": "todo->claimed",
+    "title": "Fix payment webhook",
+    "status": "claimed",
+    "assignee": "claude-remote",
+    "project_id": "gambino"
+  }
+}
+```
+
+This means Telegram bridges, WebSocket subscribers, and watchdogs see task activity with zero changes to their code.
+
+## Watchdog
+
+Configure dead man's switches and peer health checks via a JSON config file.
+
+```bash
+export SLINKD_CONFIG=/etc/slinkd.json
+```
+
+```json
+{
+  "instance_name": "slinkd-prod",
+  "watchers": [
+    {
+      "channel": "pi-fleet",
+      "author": "pi-001",
+      "expect_every": "1h",
+      "alert_channel": "alerts",
+      "message": "pi-001 went silent",
+      "recovery_message": "pi-001 is back online",
+      "remind_every": "4h"
+    }
+  ],
+  "peers": [
+    {
+      "name": "slinkd-backup",
+      "url": "http://backup-host:8080",
+      "heartbeat_every": "30s",
+      "expect_every": "2m",
+      "alert_channel": "alerts"
+    }
+  ]
+}
+```
+
+Watchers monitor channels for activity — if a source stops posting within the expected interval, an alert fires. Recovery alerts fire when the source comes back. Peers ping each other's `/healthz` endpoints.
 
 ## Configuration
-
-All configuration is through environment variables.
 
 ### Server
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `SLINKD_API_KEY` | Yes | — | Read-write key for full API access |
-| `SLINKD_READ_KEY` | No | — | Read-only key (can GET events/channels, cannot POST) |
-| `DATABASE_URL` | No | `postgres://localhost:5432/slinkd?sslmode=disable` | Postgres connection string |
+| `SLINKD_API_KEY` | Yes | — | Read-write key |
+| `SLINKD_READ_KEY` | No | — | Read-only key |
+| `DATABASE_URL` | No | `postgres://localhost:5432/slinkd?sslmode=disable` | Postgres connection |
 | `SLINKD_ADDR` | No | `:8080` | Listen address |
+| `SLINKD_CONFIG` | No | `slinkd.json` | Watchdog config file |
 
 ### CLI
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `SLINKD_API_KEY` | Yes | — | Must match the server's key |
+| `SLINKD_API_KEY` | Yes | — | Must match the server |
 | `SLINKD_HOST` | No | `http://localhost:8080` | Server URL |
 
 ### Telegram Bridge
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `SLINKD_API_KEY` | Yes | — | Must match the server's key |
+| `SLINKD_API_KEY` | Yes | — | Must match the server |
 | `SLINKD_HOST` | No | `http://localhost:8080` | Server URL |
 | `SLINKD_CHANNEL` | No | `alerts` | Channel to watch |
 | `TELEGRAM_BOT_TOKEN` | Yes | — | Token from @BotFather |
 | `TELEGRAM_CHAT_ID` | Yes | — | Your Telegram chat ID |
 
-## CLI Usage
-
-```bash
-# Create a channel
-slinkd channel create prod-alerts
-slinkd channel create deploys --name="Deploy Log"
-
-# List channels
-slinkd channel list
-
-# Send an event
-slinkd send prod-alerts --type=alert --text="API error rate >5%" --author=monitor
-slinkd send deploys --type=deployment --text="v2.1 shipped" --author=ci
-
-# View recent events
-slinkd events prod-alerts
-slinkd events prod-alerts --limit=50
-
-# Stream events live
-slinkd tail prod-alerts
-```
-
-### Event Types
-
-`message`, `breaking_change`, `alert`, `deployment`, `signal`
-
-## API
-
-All endpoints require `Authorization: Bearer <key>` header.
-
-Two key types are supported:
-
-| Key | Can GET | Can POST |
-|---|---|---|
-| `SLINKD_API_KEY` | Yes | Yes |
-| `SLINKD_READ_KEY` | Yes | No |
-
-Use the read-only key to give someone visibility into your event stream without letting them write to it.
-
-### Channels
-
-```
-POST /channels              Create a channel
-     Body: {"id": "alerts", "name": "Alerts"}
-
-GET  /channels               List all channels
-```
-
-### Events
-
-```
-POST /channels/:id/events   Publish an event
-     Body: {"type": "alert", "text": "something broke", "author": "bot", "data": {}}
-
-GET  /channels/:id/events   Get events (paginated)
-     Query: ?cursor=<timestamp>&limit=50
-```
-
-### WebSocket
-
-```
-GET  /ws?channel=:id         Stream events in real time
-     Header: Authorization: Bearer <key>
-```
-
 ## Clients
 
 ### Node.js
 
-Copy `clients/nodejs/slinkd.js` into your project. Zero dependencies — uses built-in `fetch` (Node 18+).
+Copy `clients/nodejs/slinkd.js` into your project. Zero dependencies (Node 18+).
 
 ```js
 const { Slinkd } = require('./slinkd');
 const ss = new Slinkd({ defaultChannel: 'my-project', author: 'my-bot' });
 
-// Send an alert (rate-limited: same text suppressed for 60s)
 await ss.alert('Orderbook empty: depth=0');
-
-// Send with custom cooldown
-await ss.alert('Spread too high', { cooldown: 300 });
-
-// Send any event type
 await ss.send('deploys', { type: 'deployment', text: 'v3 live', author: 'ci' });
 ```
 
@@ -225,98 +291,65 @@ Copy `clients/python/slinkd.py` into your project. Requires `requests`.
 
 ```python
 from slinkd import Slinkd
-
 ss = Slinkd(author="my-bot")
-
-# Send an alert (rate-limited: same text suppressed for 60s)
 ss.alert("Orderbook empty: depth=0")
-
-# Send with custom cooldown
-ss.alert("Spread too high", cooldown=300)
-
-# Send any event type
 ss.send("deploys", type="deployment", text="v3 live", author="ci")
 ```
 
-## Integrating into an existing project
+## MCP Integration
 
-See [INTEGRATING.md](./INTEGRATING.md) for a step-by-step walkthrough (with the gambino-backend integration as a worked example).
+slinkd has an MCP server ([mycelium/slinkd_mcp.py](https://github.com/officialbubies/mycelium)) that exposes the full API as MCP tools. Claude Code instances connect over SSE and can:
 
-## Telegram Alerts
+- `post_task` / `claim_task` / `start_task` / `complete_task` — full task lifecycle
+- `list_tasks` / `get_task` / `update_task` — kanban queries
+- `send` / `read` / `chat` / `log` / `alert` — event streaming
+- Project-scoped routing via `SLINKD_PROJECT` env var
 
-1. Message [@BotFather](https://t.me/BotFather) on Telegram, create a bot, copy the token.
-2. Message your bot, then get your chat ID:
-   ```bash
-   curl https://api.telegram.org/bot<TOKEN>/getUpdates
-   ```
-   Your chat ID is in `result[0].message.chat.id`.
-3. Run the bridge:
-   ```bash
-   export TELEGRAM_BOT_TOKEN=your-token
-   export TELEGRAM_CHAT_ID=your-chat-id
-   export SLINKD_API_KEY=your-secret-key
-   ./bin/slinkd-telegram
-   ```
-
-The bridge watches for `type=alert` events and forwards them to Telegram. It auto-reconnects if the server drops.
-
-## Sharing With Others
-
-Give someone access to your slinkd instance:
-
-**Full access (read + write):**
-```bash
-export SLINKD_HOST=http://your-server:8080
-export SLINKD_API_KEY=your-secret-key
-```
-
-**Read-only access (can view and tail, cannot post):**
-```bash
-export SLINKD_HOST=http://your-server:8080
-export SLINKD_API_KEY=your-read-only-key
-```
-
-Generate a read key however you want (`openssl rand -hex 16 | sed 's/^/sk-read-/'`), set it as `SLINKD_READ_KEY` on the server, and share it. The read key can list channels, get events, and stream via WebSocket, but any POST request returns 401.
+Multiple Claude instances share the same slinkd, coordinate through tasks, and communicate through channels.
 
 ## Project Structure
 
 ```
 slinkd/
   server/
-    main.go          HTTP server, auth middleware, WebSocket hub, migrations
-    channels.go      Channel create/list handlers
-    events.go        Event publish/query, cursor pagination, WebSocket streaming
+    main.go          HTTP server, auth, WebSocket hub, migrations
+    channels.go      Channel CRUD
+    events.go        Event publish/query, cursor pagination, WebSocket
+    projects.go      Project CRUD, agent membership
+    agents.go        Agent registration, heartbeat, status
+    tasks.go         Task CRUD, state machine, atomic claiming, event bridge
+    watchers.go      Dead man's switch, peer health checks
   cli/
-    main.go          CLI: tail, send, channel create/list
+    main.go          CLI: tail, send, channel CRUD
   bridges/
     telegram/
       main.go        WebSocket→Telegram alert forwarder
   clients/
-    nodejs/
-      slinkd.js  Node.js client, zero dependencies (Node 18+)
-    python/
-      slinkd.py  Python client with rate-limited alerts
-  Dockerfile         Multi-stage build, ~15MB image
+    nodejs/slinkd.js
+    python/slinkd.py
+  Dockerfile
 ```
 
 ## Database Schema
 
-Created automatically on server startup:
+Created automatically on startup:
 
 ```sql
-CREATE TABLE channels (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    created_at BIGINT
-);
+-- Event streaming
+channels (id TEXT PK, name TEXT, created_at BIGINT)
+events   (id UUID PK, channel TEXT FK, type TEXT, timestamp BIGINT, author TEXT, data JSONB, text TEXT)
 
-CREATE TABLE events (
-    id UUID PRIMARY KEY,
-    channel TEXT NOT NULL REFERENCES channels(id),
-    type TEXT NOT NULL,
-    timestamp BIGINT NOT NULL,
-    author TEXT NOT NULL DEFAULT '',
-    data JSONB,
-    text TEXT NOT NULL DEFAULT ''
-);
+-- Task orchestration
+projects       (id TEXT PK, name TEXT, channel TEXT FK, description TEXT, created_at BIGINT)
+agents         (id TEXT PK, name TEXT, status TEXT, last_seen BIGINT, metadata JSONB, created_at BIGINT)
+agent_projects (agent_id TEXT FK, project_id TEXT FK, role TEXT, joined_at BIGINT)
+tasks          (id UUID PK, project_id TEXT FK, title TEXT, description TEXT, status TEXT,
+                priority INT, assignee TEXT FK, parent_task_id UUID FK, created_by TEXT,
+                result TEXT, claimed_at BIGINT, started_at BIGINT, completed_at BIGINT,
+                metadata JSONB, created_at BIGINT, updated_at BIGINT)
 ```
+
+## See Also
+
+- [WHY.md](./WHY.md) — Why slinkd exists and why it seems dumb
+- [INTEGRATING.md](./INTEGRATING.md) — Step-by-step integration guide
