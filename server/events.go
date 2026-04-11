@@ -19,6 +19,9 @@ var validEventTypes = map[string]bool{
 	"alert":           true,
 	"deployment":      true,
 	"signal":          true,
+	"task":            true,
+	"task_result":     true,
+	"task_update":     true,
 }
 
 type Event struct {

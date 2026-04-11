@@ -91,6 +91,12 @@ func main() {
 	mux.HandleFunc("/channels", authMiddleware(handleChannels))
 	mux.HandleFunc("/channels/", authMiddleware(handleChannelRoutes))
 	mux.HandleFunc("/ws", authMiddleware(handleWS))
+	mux.HandleFunc("/projects", authMiddleware(handleProjects))
+	mux.HandleFunc("/projects/", authMiddleware(handleProjectRoutes))
+	mux.HandleFunc("/agents", authMiddleware(handleAgents))
+	mux.HandleFunc("/agents/", authMiddleware(handleAgentRoutes))
+	mux.HandleFunc("/tasks", authMiddleware(handleTasksTopLevel))
+	mux.HandleFunc("/tasks/", authMiddleware(handleTaskRoutes))
 
 	// /healthz is unauthenticated so peers can ping it
 	instanceName := "slinkd"
@@ -169,6 +175,53 @@ func migrate(ctx context.Context) error {
 		text TEXT NOT NULL DEFAULT ''
 	);
 	CREATE INDEX IF NOT EXISTS idx_events_channel_ts ON events(channel, timestamp);
+
+	CREATE TABLE IF NOT EXISTS projects (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		channel TEXT NOT NULL REFERENCES channels(id),
+		description TEXT NOT NULL DEFAULT '',
+		created_at BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM NOW()) * 1000)::BIGINT
+	);
+
+	CREATE TABLE IF NOT EXISTS agents (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		status TEXT NOT NULL DEFAULT 'idle',
+		last_seen BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM NOW()) * 1000)::BIGINT,
+		metadata JSONB,
+		created_at BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM NOW()) * 1000)::BIGINT
+	);
+
+	CREATE TABLE IF NOT EXISTS agent_projects (
+		agent_id TEXT NOT NULL REFERENCES agents(id),
+		project_id TEXT NOT NULL REFERENCES projects(id),
+		role TEXT NOT NULL DEFAULT 'member',
+		joined_at BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM NOW()) * 1000)::BIGINT,
+		PRIMARY KEY (agent_id, project_id)
+	);
+
+	CREATE TABLE IF NOT EXISTS tasks (
+		id UUID PRIMARY KEY,
+		project_id TEXT NOT NULL REFERENCES projects(id),
+		title TEXT NOT NULL,
+		description TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL DEFAULT 'backlog',
+		priority INTEGER NOT NULL DEFAULT 0,
+		assignee TEXT REFERENCES agents(id),
+		parent_task_id UUID REFERENCES tasks(id),
+		created_by TEXT NOT NULL DEFAULT '',
+		result TEXT NOT NULL DEFAULT '',
+		claimed_at BIGINT,
+		started_at BIGINT,
+		completed_at BIGINT,
+		metadata JSONB,
+		created_at BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM NOW()) * 1000)::BIGINT,
+		updated_at BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM NOW()) * 1000)::BIGINT
+	);
+	CREATE INDEX IF NOT EXISTS idx_tasks_project_status ON tasks(project_id, status);
+	CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee);
+	CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
 	`
 	_, err := db.Exec(ctx, schema)
 	return err
