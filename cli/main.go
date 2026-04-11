@@ -66,6 +66,8 @@ func main() {
 		cmdBoard(os.Args[2:])
 	case "tasks":
 		cmdTasks(os.Args[2:])
+	case "projects":
+		cmdProjects()
 	default:
 		usage()
 	}
@@ -76,6 +78,7 @@ func usage() {
 
 Commands:
   slinkd board [--project=X]                         Kanban board view
+  slinkd projects                                    List all projects
   slinkd tasks [--project=X] [--status=X] [--assignee=X]  List tasks
   slinkd tail <channel>                              Stream live events
   slinkd events <channel> [--limit=N]                Show recent events

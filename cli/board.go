@@ -298,6 +298,93 @@ func cmdBoard(args []string) {
 	fmt.Println()
 }
 
+// cmdProjects shows all projects with task counts
+func cmdProjects() {
+	projects := fetchProjects()
+	agents := fetchAgents()
+
+	if len(projects) == 0 {
+		fmt.Println("no projects")
+		return
+	}
+
+	fmt.Printf("\n%s%s%s\n", bold, "projects", reset)
+	fmt.Println(strings.Repeat("─", 80))
+
+	for _, p := range projects {
+		// Fetch task counts per status for this project
+		allTasks := fetchTasks(p.ID, "")
+		counts := map[string]int{}
+		for _, t := range allTasks {
+			counts[t.Status]++
+		}
+
+		total := len(allTasks)
+		active := counts["todo"] + counts["claimed"] + counts["in_progress"]
+		blocked := counts["blocked"]
+		done := counts["done"]
+
+		// Project header
+		fmt.Printf("\n  %s%s%s %s%s%s", bold, p.Name, reset, dim, p.ID, reset)
+		if p.Channel != p.ID {
+			fmt.Printf(" %s→ #%s%s", dim, p.Channel, reset)
+		}
+		fmt.Println()
+
+		// Task summary bar
+		parts := []string{}
+		if active > 0 {
+			parts = append(parts, fmt.Sprintf("%s%d active%s", cyan, active, reset))
+		}
+		if blocked > 0 {
+			parts = append(parts, fmt.Sprintf("%s%d blocked%s", red, blocked, reset))
+		}
+		if done > 0 {
+			parts = append(parts, fmt.Sprintf("%s%d done%s", green, done, reset))
+		}
+		if counts["backlog"] > 0 {
+			parts = append(parts, fmt.Sprintf("%s%d backlog%s", gray, counts["backlog"], reset))
+		}
+
+		if total == 0 {
+			fmt.Printf("    %sno tasks%s\n", dim, reset)
+		} else {
+			fmt.Printf("    %s (%d total)\n", strings.Join(parts, "  "), total)
+		}
+
+		// Agents on this project
+		data, err := apiGet("/projects/"+url.PathEscape(p.ID)+"/agents", nil)
+		if err == nil {
+			var members []struct {
+				AgentID string `json:"agent_id"`
+				Role    string `json:"role"`
+			}
+			json.Unmarshal(data, &members)
+			if len(members) > 0 {
+				names := []string{}
+				for _, m := range members {
+					// Find agent status
+					status := ""
+					for _, a := range agents {
+						if a.ID == m.AgentID {
+							color := green
+							if a.Status == "busy" {
+								color = yellow
+							}
+							status = fmt.Sprintf("%s%s%s", color, a.Status, reset)
+							break
+						}
+					}
+					names = append(names, fmt.Sprintf("%s %s(%s)%s", m.AgentID, dim, status, reset))
+				}
+				fmt.Printf("    agents: %s\n", strings.Join(names, ", "))
+			}
+		}
+	}
+
+	fmt.Println()
+}
+
 // cmdTasks shows a filtered task list
 func cmdTasks(args []string) {
 	project := ""
