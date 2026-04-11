@@ -385,6 +385,93 @@ func cmdProjects() {
 	fmt.Println()
 }
 
+// cmdAgents shows all registered agents with status and project membership
+func cmdAgents() {
+	agents := fetchAgents()
+	projects := fetchProjects()
+
+	if len(agents) == 0 {
+		fmt.Println("no agents registered")
+		return
+	}
+
+	// Build agent -> projects map
+	agentProjects := map[string][]string{}
+	for _, p := range projects {
+		data, err := apiGet("/projects/"+url.PathEscape(p.ID)+"/agents", nil)
+		if err != nil {
+			continue
+		}
+		var members []struct {
+			AgentID string `json:"agent_id"`
+			Role    string `json:"role"`
+		}
+		json.Unmarshal(data, &members)
+		for _, m := range members {
+			agentProjects[m.AgentID] = append(agentProjects[m.AgentID], p.ID)
+		}
+	}
+
+	// Build agent -> active tasks map
+	allTasks := fetchTasks("", "claimed,in_progress")
+	agentTasks := map[string][]Task{}
+	for _, t := range allTasks {
+		if t.Assignee != nil && *t.Assignee != "" {
+			agentTasks[*t.Assignee] = append(agentTasks[*t.Assignee], t)
+		}
+	}
+
+	fmt.Printf("\n%s%s%s\n", bold, "agents", reset)
+	fmt.Println(strings.Repeat("─", 80))
+
+	for _, a := range agents {
+		color := green
+		statusLabel := "idle"
+		switch a.Status {
+		case "busy":
+			color = yellow
+			statusLabel = "busy"
+		case "offline":
+			color = red
+			statusLabel = "offline"
+		default:
+			// Check if last_seen is stale (>10 min)
+			if time.Since(time.UnixMilli(a.LastSeen)) > 10*time.Minute {
+				color = gray
+				statusLabel = a.Status + " " + dim + "(" + timeAgo(a.LastSeen) + " ago)"
+			}
+		}
+
+		fmt.Printf("\n  %s●%s %s%s%s  %s%s%s\n", color, reset, bold, a.Name, reset, color, statusLabel, reset)
+
+		// Projects
+		if projs, ok := agentProjects[a.ID]; ok && len(projs) > 0 {
+			fmt.Printf("    projects: %s\n", strings.Join(projs, ", "))
+		} else {
+			fmt.Printf("    projects: %snone%s\n", dim, reset)
+		}
+
+		// Active tasks
+		if tasks, ok := agentTasks[a.ID]; ok && len(tasks) > 0 {
+			for _, t := range tasks {
+				icon := statusIcon(t.Status)
+				sColor := statusColor(t.Status)
+				age := ""
+				if t.StartedAt != nil {
+					age = fmt.Sprintf(" %s%s%s", dim, timeAgo(*t.StartedAt), reset)
+				} else if t.ClaimedAt != nil {
+					age = fmt.Sprintf(" %s%s%s", dim, timeAgo(*t.ClaimedAt), reset)
+				}
+				fmt.Printf("    %s%s%s %s%s%s%s\n", sColor, icon, reset, t.Title, age, " ", gray+t.ID[:8]+reset)
+			}
+		} else {
+			fmt.Printf("    %sno active tasks%s\n", dim, reset)
+		}
+	}
+
+	fmt.Println()
+}
+
 // cmdTasks shows a filtered task list
 func cmdTasks(args []string) {
 	project := ""

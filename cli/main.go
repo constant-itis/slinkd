@@ -68,6 +68,8 @@ func main() {
 		cmdTasks(os.Args[2:])
 	case "projects":
 		cmdProjects()
+	case "agents":
+		cmdAgents()
 	default:
 		usage()
 	}
@@ -79,6 +81,7 @@ func usage() {
 Commands:
   slinkd board [--project=X]                         Kanban board view
   slinkd projects                                    List all projects
+  slinkd agents                                      List all agents
   slinkd tasks [--project=X] [--status=X] [--assignee=X]  List tasks
   slinkd tail <channel>                              Stream live events
   slinkd events <channel> [--limit=N]                Show recent events
