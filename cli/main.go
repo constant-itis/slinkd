@@ -70,6 +70,13 @@ func main() {
 		cmdProjects()
 	case "agents":
 		cmdAgents()
+	case "history":
+		cmdHistory(os.Args[2:])
+	case "task":
+		if len(os.Args) < 3 {
+			fatal("usage: slinkd task <id>")
+		}
+		cmdTaskDetail(os.Args[2])
 	default:
 		usage()
 	}
@@ -82,6 +89,8 @@ Commands:
   slinkd board [--project=X]                         Kanban board view
   slinkd projects                                    List all projects
   slinkd agents                                      List all agents
+  slinkd history [--project=X] [--limit=N]           Completed tasks with results
+  slinkd task <id>                                   Full task detail + timeline
   slinkd tasks [--project=X] [--status=X] [--assignee=X]  List tasks
   slinkd tail <channel>                              Stream live events
   slinkd events <channel> [--limit=N]                Show recent events

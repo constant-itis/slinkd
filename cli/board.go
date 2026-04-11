@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -34,6 +35,7 @@ type Task struct {
 	ID          string  `json:"id"`
 	ProjectID   string  `json:"project_id"`
 	Title       string  `json:"title"`
+	Description string  `json:"description"`
 	Status      string  `json:"status"`
 	Priority    int     `json:"priority"`
 	Assignee    *string `json:"assignee"`
@@ -44,6 +46,7 @@ type Task struct {
 	CompletedAt *int64  `json:"completed_at"`
 	CreatedAt   int64   `json:"created_at"`
 	UpdatedAt   int64   `json:"updated_at"`
+	Subtasks    []Task  `json:"subtasks,omitempty"`
 }
 
 type AgentResponse struct {
@@ -470,6 +473,239 @@ func cmdAgents() {
 	}
 
 	fmt.Println()
+}
+
+// cmdHistory shows completed tasks with results and timing
+func cmdHistory(args []string) {
+	project := ""
+	limit := "20"
+	for _, arg := range args {
+		switch {
+		case strings.HasPrefix(arg, "--project="):
+			project = strings.TrimPrefix(arg, "--project=")
+		case strings.HasPrefix(arg, "--limit="):
+			limit = strings.TrimPrefix(arg, "--limit=")
+		}
+	}
+
+	tasks := fetchTasks(project, "done")
+	if len(tasks) == 0 {
+		fmt.Println("no completed tasks")
+		return
+	}
+
+	// Respect limit
+	maxItems := 20
+	if n, err := strconv.Atoi(limit); err == nil && n > 0 {
+		maxItems = n
+	}
+	if len(tasks) > maxItems {
+		tasks = tasks[:maxItems]
+	}
+
+	title := "history"
+	if project != "" {
+		title += " / " + project
+	}
+	fmt.Printf("\n%s%s%s %s(%d completed)%s\n", bold, title, reset, dim, len(tasks), reset)
+	fmt.Println(strings.Repeat("─", 80))
+
+	for _, t := range tasks {
+		assignee := "unassigned"
+		if t.Assignee != nil && *t.Assignee != "" {
+			assignee = *t.Assignee
+		}
+
+		// Duration: created → completed
+		duration := ""
+		if t.CompletedAt != nil {
+			d := time.UnixMilli(*t.CompletedAt).Sub(time.UnixMilli(t.CreatedAt))
+			if d < time.Minute {
+				duration = fmt.Sprintf("%ds", int(d.Seconds()))
+			} else if d < time.Hour {
+				duration = fmt.Sprintf("%dm", int(d.Minutes()))
+			} else {
+				duration = fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+			}
+		}
+
+		completedStr := ""
+		if t.CompletedAt != nil {
+			completedStr = time.UnixMilli(*t.CompletedAt).Format("Jan 02 15:04")
+		}
+
+		proj := ""
+		if project == "" {
+			proj = fmt.Sprintf("%s%s:%s ", dim, t.ProjectID, reset)
+		}
+
+		fmt.Printf("\n  %s✔%s %s%s%s%s\n", green, reset, proj, bold, t.Title, reset)
+		fmt.Printf("    %s%s → %s · %s · %s%s\n", dim, assignee, completedStr, duration, t.ID[:8], reset)
+		if t.Result != "" {
+			result := t.Result
+			if len(result) > 120 {
+				result = result[:117] + "..."
+			}
+			fmt.Printf("    %s%s%s\n", gray, result, reset)
+		}
+	}
+	fmt.Println()
+}
+
+// cmdTaskDetail shows full task detail with event timeline
+func cmdTaskDetail(taskID string) {
+	// Try full ID first
+	data, err := apiGet("/tasks/"+url.PathEscape(taskID), nil)
+
+	var t Task
+	if err != nil || json.Unmarshal(data, &t) != nil || t.ID == "" {
+		// Try partial ID match across all statuses
+		allTasks := fetchTasks("", "")
+		matched := []Task{}
+		for _, task := range allTasks {
+			if strings.HasPrefix(task.ID, taskID) {
+				matched = append(matched, task)
+			}
+		}
+		if len(matched) == 0 {
+			fatal("task not found: " + taskID)
+		}
+		if len(matched) > 1 {
+			fmt.Printf("ambiguous ID %s, matches:\n", taskID)
+			for _, task := range matched {
+				fmt.Printf("  %s  %s\n", task.ID, task.Title)
+			}
+			return
+		}
+		data, err = apiGet("/tasks/"+url.PathEscape(matched[0].ID), nil)
+		if err != nil {
+			fatal("task not found")
+		}
+		taskID = matched[0].ID
+		json.Unmarshal(data, &t)
+	}
+
+	color := statusColor(t.Status)
+	icon := statusIcon(t.Status)
+	assignee := "unassigned"
+	if t.Assignee != nil && *t.Assignee != "" {
+		assignee = *t.Assignee
+	}
+
+	fmt.Printf("\n%s%s%s %s%s%s\n", color, icon, reset, bold, t.Title, reset)
+	fmt.Println(strings.Repeat("─", 80))
+	fmt.Printf("  ID:         %s\n", t.ID)
+	fmt.Printf("  Project:    %s\n", t.ProjectID)
+	fmt.Printf("  Status:     %s%s%s\n", color, t.Status, reset)
+	fmt.Printf("  Priority:   %d\n", t.Priority)
+	fmt.Printf("  Assignee:   %s\n", assignee)
+	fmt.Printf("  Created by: %s\n", t.CreatedBy)
+	if t.Description != "" {
+		fmt.Printf("  Description: %s\n", t.Description)
+	}
+	if t.Result != "" {
+		fmt.Printf("  Result:     %s%s%s\n", green, t.Result, reset)
+	}
+
+	// Timestamps
+	fmt.Printf("\n  %sTimeline:%s\n", bold, reset)
+	fmt.Printf("    created    %s\n", time.UnixMilli(t.CreatedAt).Format("Jan 02 15:04:05"))
+	if t.ClaimedAt != nil {
+		d := time.UnixMilli(*t.ClaimedAt).Sub(time.UnixMilli(t.CreatedAt))
+		fmt.Printf("    claimed    %s  %s+%s%s\n", time.UnixMilli(*t.ClaimedAt).Format("Jan 02 15:04:05"), dim, fmtDuration(d), reset)
+	}
+	if t.StartedAt != nil {
+		base := t.CreatedAt
+		if t.ClaimedAt != nil {
+			base = *t.ClaimedAt
+		}
+		d := time.UnixMilli(*t.StartedAt).Sub(time.UnixMilli(base))
+		fmt.Printf("    started    %s  %s+%s%s\n", time.UnixMilli(*t.StartedAt).Format("Jan 02 15:04:05"), dim, fmtDuration(d), reset)
+	}
+	if t.CompletedAt != nil {
+		base := t.CreatedAt
+		if t.StartedAt != nil {
+			base = *t.StartedAt
+		}
+		d := time.UnixMilli(*t.CompletedAt).Sub(time.UnixMilli(base))
+		fmt.Printf("    completed  %s  %s+%s%s\n", time.UnixMilli(*t.CompletedAt).Format("Jan 02 15:04:05"), dim, fmtDuration(d), reset)
+	}
+
+	// Fetch event timeline from the project channel
+	var projectChannel string
+	pData, pErr := apiGet("/projects/"+url.PathEscape(t.ProjectID), nil)
+	if pErr == nil {
+		var proj ProjectResponse
+		json.Unmarshal(pData, &proj)
+		projectChannel = proj.Channel
+	}
+
+	if projectChannel != "" {
+		evData, evErr := apiGet("/channels/"+url.PathEscape(projectChannel)+"/events", map[string]string{"limit": "200"})
+		if evErr == nil {
+			var evResp struct {
+				Events []struct {
+					Type      string `json:"type"`
+					Text      string `json:"text"`
+					Author    string `json:"author"`
+					Timestamp int64  `json:"timestamp"`
+					Data      struct {
+						TaskID string `json:"task_id"`
+						Action string `json:"action"`
+					} `json:"data"`
+				} `json:"events"`
+			}
+			json.Unmarshal(evData, &evResp)
+
+			events := []struct {
+				Action    string
+				Author    string
+				Timestamp int64
+			}{}
+			for _, ev := range evResp.Events {
+				if ev.Type == "task_update" && ev.Data.TaskID == t.ID {
+					events = append(events, struct {
+						Action    string
+						Author    string
+						Timestamp int64
+					}{ev.Data.Action, ev.Author, ev.Timestamp})
+				}
+			}
+
+			if len(events) > 0 {
+				fmt.Printf("\n  %sEvents:%s\n", bold, reset)
+				for _, ev := range events {
+					ts := time.UnixMilli(ev.Timestamp).Format("15:04:05")
+					fmt.Printf("    %s[%s]%s %s %s(%s)%s\n", dim, ts, reset, ev.Action, dim, ev.Author, reset)
+				}
+			}
+		}
+	}
+
+	// Subtasks
+	if len(t.Subtasks) > 0 {
+		fmt.Printf("\n  %sSubtasks (%d):%s\n", bold, len(t.Subtasks), reset)
+		for _, s := range t.Subtasks {
+			sColor := statusColor(s.Status)
+			sIcon := statusIcon(s.Status)
+			fmt.Printf("    %s%s%s %s %s%s%s\n", sColor, sIcon, reset, s.Title, gray, s.ID[:8], reset)
+		}
+	}
+
+	fmt.Println()
+}
+
+func fmtDuration(d time.Duration) string {
+	if d < time.Second {
+		return "<1s"
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
+	}
+	return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
 }
 
 // cmdTasks shows a filtered task list
