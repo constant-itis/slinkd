@@ -33,18 +33,24 @@ type Task struct {
 }
 
 // Valid status transitions: from -> []to
+// Flow: todo → claimed → in_progress → review → done
+//                                        ↓
+//                                     qc-fail (needs human review)
 var validTransitions = map[string][]string{
 	"backlog":     {"todo", "cancelled"},
 	"todo":        {"claimed", "cancelled"},
 	"claimed":     {"in_progress", "todo", "cancelled"},
-	"in_progress": {"blocked", "done", "cancelled"},
-	"blocked":     {"in_progress", "cancelled"},
-	"cancelled":   {"backlog"},
+	"in_progress": {"review", "blocked", "cancelled"},
+	"review":      {"done", "qc-fail", "in_progress", "claimed", "cancelled"},
+	"qc-fail":     {"todo", "in_progress", "cancelled"},
+	"blocked":     {"in_progress", "todo", "cancelled"},
+	"cancelled":   {"backlog", "todo"},
 }
 
 var validStatuses = map[string]bool{
 	"backlog": true, "todo": true, "claimed": true,
-	"in_progress": true, "blocked": true, "done": true, "cancelled": true,
+	"in_progress": true, "review": true, "qc-fail": true,
+	"blocked": true, "done": true, "cancelled": true,
 }
 
 // emitTaskEvent publishes a task_update event to the project's channel.
@@ -123,6 +129,11 @@ func handleTaskRoutes(w http.ResponseWriter, r *http.Request) {
 
 	if parts[1] == "transition" && r.Method == http.MethodPost {
 		handleTaskTransition(w, r, taskID)
+		return
+	}
+
+	if parts[1] == "cancel" && r.Method == http.MethodPatch {
+		handleCancelTask(w, r, taskID)
 		return
 	}
 
@@ -417,10 +428,11 @@ func handleTaskTransition(w http.ResponseWriter, r *http.Request, taskID string)
 			http.Error(w, "agent_id is required for claiming", http.StatusBadRequest)
 			return
 		}
-		// Atomic claim: WHERE status = 'todo' ensures only one agent wins
+		// Atomic claim: WHERE status IN ('todo', 'review') ensures only one agent wins
+		// 'review' allows QC agents to claim tasks for review
 		t, err = scanTask(db.QueryRow(ctx,
 			`UPDATE tasks SET status = 'claimed', assignee = $1, claimed_at = $2, updated_at = $2
-			 WHERE id = $3 AND status = 'todo'
+			 WHERE id = $3 AND status IN ('todo', 'review')
 			 RETURNING `+taskColumns,
 			req.AgentID, now, taskID,
 		))
@@ -433,10 +445,29 @@ func handleTaskTransition(w http.ResponseWriter, r *http.Request, taskID string)
 			now, taskID,
 		))
 
-	case "done":
+	case "review":
+		// Worker finished — move to review for QC
 		t, err = scanTask(db.QueryRow(ctx,
-			`UPDATE tasks SET status = 'done', result = $1, completed_at = $2, updated_at = $2
+			`UPDATE tasks SET status = 'review', result = $1, updated_at = $2
 			 WHERE id = $3 AND status = 'in_progress'
+			 RETURNING `+taskColumns,
+			req.Result, now, taskID,
+		))
+
+	case "done":
+		// Only QC can mark done (from review)
+		t, err = scanTask(db.QueryRow(ctx,
+			`UPDATE tasks SET status = 'done', completed_at = $1, updated_at = $1
+			 WHERE id = $2 AND status = 'review'
+			 RETURNING `+taskColumns,
+			now, taskID,
+		))
+
+	case "qc-fail":
+		// QC rejected — goes to review queue for human
+		t, err = scanTask(db.QueryRow(ctx,
+			`UPDATE tasks SET status = 'qc-fail', result = $1, updated_at = $2
+			 WHERE id = $3 AND status = 'review'
 			 RETURNING `+taskColumns,
 			req.Result, now, taskID,
 		))
@@ -450,10 +481,10 @@ func handleTaskTransition(w http.ResponseWriter, r *http.Request, taskID string)
 		))
 
 	case "todo":
-		// Unclaim or promote from backlog
+		// Unclaim, promote from backlog, or re-open from qc-fail
 		t, err = scanTask(db.QueryRow(ctx,
 			`UPDATE tasks SET status = 'todo', assignee = NULL, claimed_at = NULL, updated_at = $1
-			 WHERE id = $2 AND status IN ('backlog', 'claimed')
+			 WHERE id = $2 AND status IN ('backlog', 'claimed', 'qc-fail', 'blocked')
 			 RETURNING `+taskColumns,
 			now, taskID,
 		))
@@ -487,6 +518,45 @@ func handleTaskTransition(w http.ResponseWriter, r *http.Request, taskID string)
 		actor = "unknown"
 	}
 	_ = emitTaskEvent(ctx, t, action, actor)
+
+	// Auto-capture linked messages when task is done
+	if req.Status == "done" {
+		captureMessagesForTask(ctx, taskID)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(t)
+}
+
+func handleCancelTask(w http.ResponseWriter, r *http.Request, taskID string) {
+	var req struct {
+		AgentID string `json:"agent_id"`
+		Reason  string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+	now := time.Now().UnixMilli()
+
+	t, err := scanTask(db.QueryRow(ctx,
+		`UPDATE tasks SET status = 'cancelled', result = $1, completed_at = $2, updated_at = $2
+		 WHERE id = $3 AND status NOT IN ('done', 'cancelled')
+		 RETURNING `+taskColumns,
+		req.Reason, now, taskID,
+	))
+	if err != nil {
+		http.Error(w, "cancel failed (task may already be done or cancelled)", http.StatusConflict)
+		return
+	}
+
+	actor := req.AgentID
+	if actor == "" {
+		actor = "unknown"
+	}
+	_ = emitTaskEvent(ctx, t, "force-cancel", actor)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(t)

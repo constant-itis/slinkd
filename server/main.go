@@ -97,6 +97,7 @@ func main() {
 	mux.HandleFunc("/agents/", authMiddleware(handleAgentRoutes))
 	mux.HandleFunc("/tasks", authMiddleware(handleTasksTopLevel))
 	mux.HandleFunc("/tasks/", authMiddleware(handleTaskRoutes))
+	mux.HandleFunc("/messages/", authMiddleware(handleMessageRoutes))
 
 	// /healthz is unauthenticated so peers can ping it
 	instanceName := "slinkd"
@@ -224,5 +225,27 @@ func migrate(ctx context.Context) error {
 	CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
 	`
 	_, err := db.Exec(ctx, schema)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Message lifecycle migration (v2)
+	msgMigration := `
+	ALTER TABLE events ADD COLUMN IF NOT EXISTS task_ref UUID REFERENCES tasks(id);
+	ALTER TABLE events ADD COLUMN IF NOT EXISTS msg_status TEXT NOT NULL DEFAULT '';
+	ALTER TABLE events ADD COLUMN IF NOT EXISTS acked_by TEXT NOT NULL DEFAULT '';
+	ALTER TABLE events ADD COLUMN IF NOT EXISTS acked_at BIGINT;
+	ALTER TABLE events ADD COLUMN IF NOT EXISTS archived_at BIGINT;
+	CREATE INDEX IF NOT EXISTS idx_events_msg_status ON events(msg_status) WHERE msg_status != '';
+	CREATE INDEX IF NOT EXISTS idx_events_task_ref ON events(task_ref) WHERE task_ref IS NOT NULL;
+	`
+	_, err = db.Exec(ctx, msgMigration)
+	if err != nil {
+		log.Printf("message lifecycle migration (may already exist): %v", err)
+	}
+
+	// Backfill: set existing message events to 'captured' (already processed)
+	_, _ = db.Exec(ctx, `UPDATE events SET msg_status = 'captured' WHERE type = 'message' AND msg_status = ''`)
+
+	return nil
 }

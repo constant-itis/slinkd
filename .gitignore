@@ -19,3 +19,10 @@ Thumbs.db
 
 # Internal infra docs (contains IPs, keys, topology)
 NETWORK.md
+
+# Build artifacts (added 2026-04-18)
+slinkd-server
+slinkd-cli
+slinkd-server-new
+*.new
+*.bak.*

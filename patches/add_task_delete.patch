@@ -1,0 +1,146 @@
+--- Task Delete & Bulk Purge for slinkd ---
+--- Apply to server/tasks.go when ready to deploy ---
+
+=== 1. Add DELETE method to handleTaskRoutes (around line 118) ===
+
+Replace the switch block:
+
+	if len(parts) == 1 {
+		switch r.Method {
+		case http.MethodGet:
+			handleGetTask(w, r, taskID)
+		case http.MethodPatch:
+			handleUpdateTask(w, r, taskID)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+		return
+	}
+
+With:
+
+	if len(parts) == 1 {
+		switch r.Method {
+		case http.MethodGet:
+			handleGetTask(w, r, taskID)
+		case http.MethodPatch:
+			handleUpdateTask(w, r, taskID)
+		case http.MethodDelete:
+			handleDeleteTask(w, r, taskID)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+		return
+	}
+
+
+=== 2. Add handleDeleteTask function (after handleCancelTask) ===
+
+func handleDeleteTask(w http.ResponseWriter, r *http.Request, taskID string) {
+	// Only allow deleting done, blocked, or cancelled tasks
+	row := db.QueryRow("SELECT id, status, title FROM tasks WHERE id = ?", taskID)
+	var task Task
+	if err := row.Scan(&task.ID, &task.Status, &task.Title); err != nil {
+		http.Error(w, "task not found", http.StatusNotFound)
+		return
+	}
+
+	allowed := map[string]bool{"done": true, "blocked": true, "cancelled": true}
+	if !allowed[task.Status] {
+		http.Error(w, fmt.Sprintf("cannot delete task in status '%s' — only done/blocked/cancelled", task.Status), http.StatusConflict)
+		return
+	}
+
+	_, err := db.Exec("DELETE FROM tasks WHERE id = ?", taskID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("delete failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"deleted": taskID,
+		"title":   task.Title,
+	})
+}
+
+
+=== 3. Add bulk purge endpoint to handleTasksTopLevel ===
+
+Replace:
+
+func handleTasksTopLevel(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		projectID := r.URL.Query().Get("project")
+		handleListTasks(w, r, projectID)
+		return
+	}
+	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+}
+
+With:
+
+func handleTasksTopLevel(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		projectID := r.URL.Query().Get("project")
+		handleListTasks(w, r, projectID)
+		return
+	}
+	if r.Method == http.MethodDelete {
+		// Bulk purge: DELETE /tasks?status=done
+		status := r.URL.Query().Get("status")
+		if status == "" {
+			http.Error(w, "must specify ?status= to bulk delete (e.g. ?status=done)", http.StatusBadRequest)
+			return
+		}
+		allowed := map[string]bool{"done": true, "blocked": true, "cancelled": true}
+		if !allowed[status] {
+			http.Error(w, fmt.Sprintf("cannot bulk delete status '%s' — only done/blocked/cancelled", status), http.StatusConflict)
+			return
+		}
+		result, err := db.Exec("DELETE FROM tasks WHERE status = ?", status)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("bulk delete failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+		count, _ := result.RowsAffected()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"deleted_count": count,
+			"status":        status,
+		})
+		return
+	}
+	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+}
+
+
+=== 4. Add MCP tool to slinkd_mcp.py ===
+
+Add after complete_task:
+
+@mcp.tool()
+def purge_tasks(status: str = "done", agent_id: str = "") -> str:
+    """Bulk delete tasks by status. Only done/blocked/cancelled allowed.
+    Set agent_id to identify yourself."""
+    aid = _agent(agent_id)
+    resp = requests.delete(
+        f"{SLINKD_HOST}/tasks",
+        headers=_headers(),
+        params={"status": status},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    return f"Purged {data.get('deleted_count', 0)} tasks with status '{status}'"
+
+
+=== DEPLOY STEPS ===
+
+1. Apply changes to server/tasks.go
+2. cd ~/slinkd-src && go build -o slinkd-server ./cmd/server
+3. sudo cp slinkd-server /usr/local/bin/slinkd-server
+4. sudo systemctl restart slinkd
+5. Add purge_tasks tool to ~/mycelium/slinkd_mcp.py
+6. Restart slinkd-mcp: kill old PID, nohup python3 slinkd_mcp.py --streamable-http --port 8201 &
+7. Test: curl -X DELETE "http://localhost:8080/tasks?status=done" -H "Authorization: Bearer ..."
