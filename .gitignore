@@ -26,3 +26,10 @@ slinkd-cli
 slinkd-server-new
 *.new
 *.bak.*
+.env.*
+*.pem
+*.key
+secrets.yaml
+secrets.json
+credentials.*
+.install_state/
