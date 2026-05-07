@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 type Task struct {
@@ -428,6 +431,20 @@ func handleTaskTransition(w http.ResponseWriter, r *http.Request, taskID string)
 			http.Error(w, "agent_id is required for claiming", http.StatusBadRequest)
 			return
 		}
+		// Auto-register the agent if it doesn't exist yet (ephemeral agents).
+		// Refreshes last_seen on every claim — supports the watchdog pattern
+		// without requiring an explicit POST /agents/{id} per claim.
+		_, regErr := db.Exec(ctx,
+			`INSERT INTO agents (id, name, last_seen, metadata)
+			 VALUES ($1, $1, $2, '{"auto_registered": true}')
+			 ON CONFLICT (id) DO UPDATE SET last_seen = $2`,
+			req.AgentID, now,
+		)
+		if regErr != nil {
+			log.Printf("agent auto-register failed: agent=%s err=%v", req.AgentID, regErr)
+			http.Error(w, fmt.Sprintf("agent register failed: %v", regErr), http.StatusInternalServerError)
+			return
+		}
 		// Atomic claim: WHERE status IN ('todo', 'review') ensures only one agent wins
 		// 'review' allows QC agents to claim tasks for review
 		t, err = scanTask(db.QueryRow(ctx,
@@ -508,7 +525,12 @@ func handleTaskTransition(w http.ResponseWriter, r *http.Request, taskID string)
 	}
 
 	if err != nil {
-		http.Error(w, "transition failed (task may have been modified by another agent)", http.StatusConflict)
+		log.Printf("transition update failed: task=%s %s->%s err=%v", taskID[:8], currentStatus, req.Status, err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.Error(w, fmt.Sprintf("transition failed: task changed state during update (current=%s target=%s)", currentStatus, req.Status), http.StatusConflict)
+		} else {
+			http.Error(w, fmt.Sprintf("transition failed: %v", err), http.StatusInternalServerError)
+		}
 		return
 	}
 
