@@ -14,6 +14,8 @@ Any system that can make an HTTP POST can publish events, create tasks, and coor
 
 **Agents** — Register agents (Claude instances, bots, services) with heartbeat tracking. Assign them to projects and tasks.
 
+**Sessions** — Track individual agent runs. The agent is the durable identity; a session pins one run to a machine (`host`/`os`) so work on a shared bus is attributable to *which window on which host* produced it — even with the same agent running from several machines at once. Events and tasks are stamped with the originating session.
+
 **Watchdog** — Dead man's switch for anything that should be posting regularly. If a source goes silent, slinkd fires an alert. Peer health checks ping other slinkd instances.
 
 ## Quickstart
@@ -109,6 +111,33 @@ curl -X POST /agents -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
   -d '{"id":"claude-remote","name":"Claude Remote","metadata":{"host":"lxc-114"}}'
 ```
+
+### Sessions
+
+```
+POST /sessions                        Register/resume a session (upsert)
+GET  /sessions?live=1&agent=X         List sessions (live=1 → not ended; agent=X → filter)
+GET  /sessions/:id                    Get session details
+POST /sessions/:id/heartbeat          Bump last_seen
+POST /sessions/:id/end                Mark the session ended
+```
+
+A session is a sub-dimension of agent identity — the same per-call model as
+everything else (`agent_id` travels in the request body). Registering is
+idempotent and resume-safe: re-registering the same `session_id` reopens the
+row and preserves its original `started_at`. `agent_id` is a soft reference
+(no FK), so a session can be registered before the agent row exists.
+
+```bash
+curl -X POST /sessions -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"a1b2c3","agent_id":"claude-remote","host":"popos","os":"linux","client":"claude-code"}'
+```
+
+Once registered, pass `session_id` (and optionally `host`) in the body of event
+publishes (`POST /channels/:id/events`) and task creates (`POST /projects/:id/tasks`)
+to stamp them with attribution. Both fields are optional and best-effort — a
+missing or stale id is stored as NULL and never fails the write.
 
 ### Tasks
 
@@ -317,6 +346,7 @@ slinkd/
     events.go        Event publish/query, cursor pagination, WebSocket
     projects.go      Project CRUD, agent membership
     agents.go        Agent registration, heartbeat, status
+    sessions.go      Session registry: register/resume, heartbeat, end, live view
     tasks.go         Task CRUD, state machine, atomic claiming, event bridge
     watchers.go      Dead man's switch, peer health checks
   cli/
@@ -335,9 +365,10 @@ slinkd/
 Created automatically on startup:
 
 ```sql
--- Event streaming
+-- Event streaming (events/tasks also carry nullable session_id/host for attribution)
 channels (id TEXT PK, name TEXT, created_at BIGINT)
-events   (id UUID PK, channel TEXT FK, type TEXT, timestamp BIGINT, author TEXT, data JSONB, text TEXT)
+events   (id UUID PK, channel TEXT FK, type TEXT, timestamp BIGINT, author TEXT, data JSONB, text TEXT,
+          session_id TEXT, host TEXT)
 
 -- Task orchestration
 projects       (id TEXT PK, name TEXT, channel TEXT FK, description TEXT, created_at BIGINT)
@@ -346,7 +377,11 @@ agent_projects (agent_id TEXT FK, project_id TEXT FK, role TEXT, joined_at BIGIN
 tasks          (id UUID PK, project_id TEXT FK, title TEXT, description TEXT, status TEXT,
                 priority INT, assignee TEXT FK, parent_task_id UUID FK, created_by TEXT,
                 result TEXT, claimed_at BIGINT, started_at BIGINT, completed_at BIGINT,
-                metadata JSONB, created_at BIGINT, updated_at BIGINT)
+                metadata JSONB, created_at BIGINT, updated_at BIGINT, session_id TEXT, host TEXT)
+
+-- Session tracking (agent_id is a soft reference — no FK)
+sessions       (session_id TEXT PK, agent_id TEXT, host TEXT, os TEXT, client TEXT,
+                started_at BIGINT, last_seen BIGINT, ended_at BIGINT)
 ```
 
 ## See Also
