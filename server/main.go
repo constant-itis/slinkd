@@ -95,6 +95,8 @@ func main() {
 	mux.HandleFunc("/projects/", authMiddleware(handleProjectRoutes))
 	mux.HandleFunc("/agents", authMiddleware(handleAgents))
 	mux.HandleFunc("/agents/", authMiddleware(handleAgentRoutes))
+	mux.HandleFunc("/sessions", authMiddleware(handleSessions))
+	mux.HandleFunc("/sessions/", authMiddleware(handleSessionRoutes))
 	mux.HandleFunc("/tasks", authMiddleware(handleTasksTopLevel))
 	mux.HandleFunc("/tasks/", authMiddleware(handleTaskRoutes))
 	mux.HandleFunc("/messages/", authMiddleware(handleMessageRoutes))
@@ -246,6 +248,34 @@ func migrate(ctx context.Context) error {
 
 	// Backfill: set existing message events to 'captured' (already processed)
 	_, _ = db.Exec(ctx, `UPDATE events SET msg_status = 'captured' WHERE type = 'message' AND msg_status = ''`)
+
+	// Session attribution migration (v3). A session is an ephemeral run of an
+	// agent on a specific machine — agent_id is a soft reference (no FK) so a
+	// stale/unregistered id never fails a write. session_id/host are stamped
+	// onto events + tasks as best-effort attribution (nullable, no FK).
+	sessionMigration := `
+	CREATE TABLE IF NOT EXISTS sessions (
+		session_id TEXT PRIMARY KEY,
+		agent_id   TEXT NOT NULL,
+		host       TEXT NOT NULL,
+		os         TEXT NOT NULL DEFAULT '',
+		client     TEXT NOT NULL DEFAULT '',
+		started_at BIGINT NOT NULL,
+		last_seen  BIGINT NOT NULL,
+		ended_at   BIGINT
+	);
+	CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions(agent_id);
+	CREATE INDEX IF NOT EXISTS idx_sessions_live ON sessions(ended_at) WHERE ended_at IS NULL;
+
+	ALTER TABLE events ADD COLUMN IF NOT EXISTS session_id TEXT;
+	ALTER TABLE events ADD COLUMN IF NOT EXISTS host TEXT;
+	ALTER TABLE tasks  ADD COLUMN IF NOT EXISTS session_id TEXT;
+	ALTER TABLE tasks  ADD COLUMN IF NOT EXISTS host TEXT;
+	`
+	_, err = db.Exec(ctx, sessionMigration)
+	if err != nil {
+		log.Printf("session migration (may already exist): %v", err)
+	}
 
 	return nil
 }

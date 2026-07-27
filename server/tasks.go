@@ -32,6 +32,8 @@ type Task struct {
 	Metadata     json.RawMessage `json:"metadata,omitempty"`
 	CreatedAt    int64           `json:"created_at"`
 	UpdatedAt    int64           `json:"updated_at"`
+	SessionID    *string         `json:"session_id,omitempty"`
+	Host         *string         `json:"host,omitempty"`
 	Subtasks     []Task          `json:"subtasks,omitempty"`
 }
 
@@ -89,12 +91,12 @@ func scanTask(row interface{ Scan(dest ...any) error }) (Task, error) {
 		&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status,
 		&t.Priority, &t.Assignee, &t.ParentTaskID, &t.CreatedBy, &t.Result,
 		&t.ClaimedAt, &t.StartedAt, &t.CompletedAt, &t.Metadata,
-		&t.CreatedAt, &t.UpdatedAt,
+		&t.CreatedAt, &t.UpdatedAt, &t.SessionID, &t.Host,
 	)
 	return t, err
 }
 
-const taskColumns = `id, project_id, title, description, status, priority, assignee, parent_task_id, created_by, result, claimed_at, started_at, completed_at, metadata, created_at, updated_at`
+const taskColumns = `id, project_id, title, description, status, priority, assignee, parent_task_id, created_by, result, claimed_at, started_at, completed_at, metadata, created_at, updated_at, session_id, host`
 
 // --- Top-level task routes: /tasks and /tasks/{id}... ---
 
@@ -155,6 +157,8 @@ func handleCreateTask(w http.ResponseWriter, r *http.Request, projectID string) 
 		CreatedBy    string          `json:"created_by"`
 		Status       string          `json:"status"`
 		Metadata     json.RawMessage `json:"metadata,omitempty"`
+		SessionID    string          `json:"session_id"`
+		Host         string          `json:"host"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
@@ -179,11 +183,11 @@ func handleCreateTask(w http.ResponseWriter, r *http.Request, projectID string) 
 	id := uuid.New().String()
 
 	t, err := scanTask(db.QueryRow(ctx,
-		`INSERT INTO tasks (id, project_id, title, description, status, priority, assignee, parent_task_id, created_by, metadata, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
+		`INSERT INTO tasks (id, project_id, title, description, status, priority, assignee, parent_task_id, created_by, metadata, session_id, host, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
 		 RETURNING `+taskColumns,
 		id, projectID, req.Title, req.Description, req.Status, req.Priority,
-		req.Assignee, req.ParentTaskID, req.CreatedBy, req.Metadata, now,
+		req.Assignee, req.ParentTaskID, req.CreatedBy, req.Metadata, strPtrOrNil(req.SessionID), strPtrOrNil(req.Host), now,
 	))
 	if err != nil {
 		http.Error(w, "failed to create task: "+err.Error(), http.StatusInternalServerError)
