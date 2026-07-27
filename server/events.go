@@ -38,14 +38,25 @@ type Event struct {
 	AckedBy    string          `json:"acked_by,omitempty"`
 	AckedAt    *int64          `json:"acked_at,omitempty"`
 	ArchivedAt *int64          `json:"archived_at,omitempty"`
+	SessionID  *string         `json:"session_id,omitempty"`
+	Host       *string         `json:"host,omitempty"`
+}
+
+// strPtrOrNil returns nil for an empty string so it stores as SQL NULL —
+// keeps session/host attribution absent rather than blank when not supplied.
+func strPtrOrNil(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 // publishEvent inserts an event into the DB, broadcasts it via WebSocket, and notifies watchers.
 func publishEvent(ctx context.Context, channel, eventType, author, text string, data json.RawMessage) (Event, error) {
-	return publishEventWithRef(ctx, channel, eventType, author, text, data, nil)
+	return publishEventWithRef(ctx, channel, eventType, author, text, data, nil, "", "")
 }
 
-func publishEventWithRef(ctx context.Context, channel, eventType, author, text string, data json.RawMessage, taskRef *string) (Event, error) {
+func publishEventWithRef(ctx context.Context, channel, eventType, author, text string, data json.RawMessage, taskRef *string, sessionID, host string) (Event, error) {
 	msgStatus := ""
 	if eventType == "message" {
 		msgStatus = "unacked"
@@ -61,12 +72,14 @@ func publishEventWithRef(ctx context.Context, channel, eventType, author, text s
 		Text:      text,
 		TaskRef:   taskRef,
 		MsgStatus: msgStatus,
+		SessionID: strPtrOrNil(sessionID),
+		Host:      strPtrOrNil(host),
 	}
 
 	_, err := db.Exec(ctx,
-		`INSERT INTO events (id, channel, type, timestamp, author, data, text, task_ref, msg_status)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		ev.ID, ev.Channel, ev.Type, ev.Timestamp, ev.Author, ev.Data, ev.Text, ev.TaskRef, ev.MsgStatus,
+		`INSERT INTO events (id, channel, type, timestamp, author, data, text, task_ref, msg_status, session_id, host)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		ev.ID, ev.Channel, ev.Type, ev.Timestamp, ev.Author, ev.Data, ev.Text, ev.TaskRef, ev.MsgStatus, ev.SessionID, ev.Host,
 	)
 	if err != nil {
 		return Event{}, fmt.Errorf("insert event: %w", err)
@@ -83,11 +96,13 @@ func publishEventWithRef(ctx context.Context, channel, eventType, author, text s
 
 func handlePublishEvent(w http.ResponseWriter, r *http.Request, channelID string) {
 	var req struct {
-		Type    string          `json:"type"`
-		Author  string          `json:"author"`
-		Data    json.RawMessage `json:"data,omitempty"`
-		Text    string          `json:"text"`
-		TaskRef *string         `json:"task_ref,omitempty"`
+		Type      string          `json:"type"`
+		Author    string          `json:"author"`
+		Data      json.RawMessage `json:"data,omitempty"`
+		Text      string          `json:"text"`
+		TaskRef   *string         `json:"task_ref,omitempty"`
+		SessionID string          `json:"session_id"`
+		Host      string          `json:"host"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
@@ -99,7 +114,7 @@ func handlePublishEvent(w http.ResponseWriter, r *http.Request, channelID string
 		return
 	}
 
-	ev, err := publishEventWithRef(r.Context(), channelID, req.Type, req.Author, req.Text, req.Data, req.TaskRef)
+	ev, err := publishEventWithRef(r.Context(), channelID, req.Type, req.Author, req.Text, req.Data, req.TaskRef, req.SessionID, req.Host)
 	if err != nil {
 		http.Error(w, "failed to publish event: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -140,7 +155,7 @@ func handleGetEvents(w http.ResponseWriter, r *http.Request, channelID string) {
 		}
 		limitArg := len(statusArgs) + 1
 		rows, qErr := db.Query(r.Context(),
-			fmt.Sprintf(`SELECT id, channel, type, timestamp, author, data, text, task_ref, msg_status, acked_by, acked_at, archived_at
+			fmt.Sprintf(`SELECT id, channel, type, timestamp, author, data, text, task_ref, msg_status, acked_by, acked_at, archived_at, session_id, host
 			 FROM events WHERE channel = $1 AND timestamp > $2%s
 			 ORDER BY timestamp ASC LIMIT $%d`, statusCond, limitArg),
 			append(statusArgs, limit)...,
@@ -160,7 +175,7 @@ func handleGetEvents(w http.ResponseWriter, r *http.Request, channelID string) {
 		}
 		limitArg := len(statusArgs) + 1
 		rows, qErr := db.Query(r.Context(),
-			fmt.Sprintf(`SELECT id, channel, type, timestamp, author, data, text, task_ref, msg_status, acked_by, acked_at, archived_at
+			fmt.Sprintf(`SELECT id, channel, type, timestamp, author, data, text, task_ref, msg_status, acked_by, acked_at, archived_at, session_id, host
 			 FROM events WHERE channel = $1%s
 			 ORDER BY timestamp ASC LIMIT $%d`, statusCond, limitArg),
 			append(statusArgs, limit)...,
@@ -199,7 +214,7 @@ func scanEvents(rows interface {
 	var events []Event
 	for rows.Next() {
 		var ev Event
-		if err := rows.Scan(&ev.ID, &ev.Channel, &ev.Type, &ev.Timestamp, &ev.Author, &ev.Data, &ev.Text, &ev.TaskRef, &ev.MsgStatus, &ev.AckedBy, &ev.AckedAt, &ev.ArchivedAt); err != nil {
+		if err := rows.Scan(&ev.ID, &ev.Channel, &ev.Type, &ev.Timestamp, &ev.Author, &ev.Data, &ev.Text, &ev.TaskRef, &ev.MsgStatus, &ev.AckedBy, &ev.AckedAt, &ev.ArchivedAt, &ev.SessionID, &ev.Host); err != nil {
 			return nil, err
 		}
 		events = append(events, ev)
